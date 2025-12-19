@@ -17,8 +17,6 @@ pub struct TelemetryReport {
     pub nars_served: Metric,
     pub nars_sent_upstream: Metric,
     pub nars_uploaded: Metric,
-    /// NARs skipped because they were substituted from an upstream cache
-    pub nars_skipped_substituted: Metric,
     /// NARs skipped because they already exist in the GHA cache
     pub nars_skipped_already_cached: Metric,
 
@@ -83,7 +81,6 @@ impl TelemetryReport {
             nars_served,
             nars_sent_upstream,
             nars_uploaded,
-            nars_skipped_substituted,
             nars_skipped_already_cached,
             num_original_paths,
             num_final_paths,
@@ -105,7 +102,6 @@ impl TelemetryReport {
         fact!(recorder, nars_served);
         fact!(recorder, nars_sent_upstream);
         fact!(recorder, nars_uploaded);
-        fact!(recorder, nars_skipped_substituted);
         fact!(recorder, nars_skipped_already_cached);
         fact!(recorder, num_original_paths);
         fact!(recorder, num_final_paths);
