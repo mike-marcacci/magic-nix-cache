@@ -35,6 +35,7 @@ impl GhaCache {
         cache_version: Option<String>,
         store: Arc<NixStore>,
         metrics: Arc<telemetry::TelemetryReport>,
+        narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
     ) -> Result<GhaCache> {
         let cb_metrics = metrics.clone();
         let mut api = Api::new(
@@ -57,7 +58,7 @@ impl GhaCache {
         let api2 = api.clone();
 
         let worker_result = tokio::task::spawn(async move {
-            worker(&api2, store, channel_rx, metrics).await
+            worker(&api2, store, channel_rx, metrics, narinfo_negative_cache).await
         });
 
         Ok(GhaCache {
@@ -104,6 +105,7 @@ async fn worker(
     store: Arc<NixStore>,
     mut channel_rx: UnboundedReceiver<Request>,
     metrics: Arc<telemetry::TelemetryReport>,
+    narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
     let mut done = HashSet::new();
 
@@ -122,7 +124,15 @@ async fn worker(
                     continue;
                 }
 
-                if let Err(err) = upload_path(api, store.clone(), &path, metrics.clone()).await {
+                if let Err(err) = upload_path(
+                    api,
+                    store.clone(),
+                    &path,
+                    metrics.clone(),
+                    narinfo_negative_cache.clone(),
+                )
+                .await
+                {
                     tracing::error!(
                         "Upload of path '{}' failed: {}",
                         store.get_full_path(&path).display(),
@@ -141,7 +151,45 @@ async fn upload_path(
     store: Arc<NixStore>,
     path: &StorePath,
     metrics: Arc<telemetry::TelemetryReport>,
+    narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
+    // Determinate-nixd sends build events for all derivations that Nix builds,
+    // including trivial builds like shell environments, wrapper scripts, and
+    // stdenv setup. We filter out paths that don't need to be uploaded:
+    //
+    // 1. Paths substituted from upstream (cache.nixos.org) - in negative cache
+    // 2. Paths already in GHA cache - from previous uploads (e.g., rebuilds of
+    //    deterministic derivations on a persistent machine)
+    //
+    // Only genuinely new build outputs get uploaded.
+    let path_hash = path.to_hash().to_string();
+
+    // Skip paths that were substituted from an upstream cache.
+    // These paths were requested through magic-nix-cache but not found in the
+    // GHA cache, so they were fetched from upstream (e.g., cache.nixos.org).
+    if narinfo_negative_cache.read().await.contains(&path_hash) {
+        tracing::debug!(
+            "Skipping upload of '{}' (substituted from upstream cache)",
+            store.get_full_path(path).display()
+        );
+        metrics.nars_skipped_substituted.incr();
+        return Ok(());
+    }
+
+    // Skip paths that already exist in the GHA cache.
+    // This catches trivial rebuilds of deterministic derivations (like
+    // nix-shell-env, wrapper scripts, etc.) that produce identical outputs
+    // and were already uploaded in a previous run.
+    let narinfo_key = format!("{}.narinfo", path_hash);
+    if api.get_file_url(&[&narinfo_key]).await?.is_some() {
+        tracing::debug!(
+            "Skipping upload of '{}' (already in GHA cache)",
+            store.get_full_path(path).display()
+        );
+        metrics.nars_skipped_already_cached.incr();
+        return Ok(());
+    }
+
     let path_info = store.query_path_info(path.clone()).await?;
 
     // Upload the NAR.
