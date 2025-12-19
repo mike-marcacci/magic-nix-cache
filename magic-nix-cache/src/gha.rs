@@ -93,10 +93,6 @@ impl GhaCache {
         store: Arc<NixStore>,
         store_paths: Vec<StorePath>,
     ) -> Result<()> {
-        // FIXME: make sending the closure optional. We might want to
-        // only send the paths that have been built by the user, under
-        // the assumption that everything else is already in a binary
-        // cache.
         // FIXME: compute_fs_closure_multi doesn't return a
         // toposort, though it doesn't really matter for the GHA
         // cache.
@@ -167,6 +163,20 @@ async fn upload_path(
     metrics: Arc<telemetry::TelemetryReport>,
     narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
+    // Skip uploading paths that came from an upstream cache.
+    // The negative cache contains paths that were requested but not found in
+    // the GHA cache, meaning they were fetched from an upstream cache like
+    // cache.nixos.org. There's no need to re-upload these.
+    let path_hash = path.to_hash().to_string();
+    if narinfo_negative_cache.read().await.contains(&path_hash) {
+        tracing::debug!(
+            "Skipping upload of '{}' because it was fetched from an upstream cache",
+            store.get_full_path(path).display()
+        );
+        metrics.nars_skipped_upstream.incr();
+        return Ok(());
+    }
+
     let path_info = store.query_path_info(path.clone()).await?;
 
     // Upload the NAR.
