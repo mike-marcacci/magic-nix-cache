@@ -17,7 +17,6 @@ pub struct TelemetryReport {
     pub nars_served: Metric,
     pub nars_sent_upstream: Metric,
     pub nars_uploaded: Metric,
-    pub nars_skipped_upstream: Metric,
 
     pub num_original_paths: Metric,
     pub num_final_paths: Metric,
@@ -80,7 +79,6 @@ impl TelemetryReport {
             nars_served,
             nars_sent_upstream,
             nars_uploaded,
-            nars_skipped_upstream,
             num_original_paths,
             num_final_paths,
             num_new_paths,
@@ -101,7 +99,6 @@ impl TelemetryReport {
         fact!(recorder, nars_served);
         fact!(recorder, nars_sent_upstream);
         fact!(recorder, nars_uploaded);
-        fact!(recorder, nars_skipped_upstream);
         fact!(recorder, num_original_paths);
         fact!(recorder, num_final_paths);
         fact!(recorder, num_new_paths);

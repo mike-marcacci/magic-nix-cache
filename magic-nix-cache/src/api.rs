@@ -152,9 +152,7 @@ async fn post_enqueue_paths(
 
 pub async fn enqueue_paths(state: &State, store_paths: Vec<StorePath>) -> Result<()> {
     if let Some(gha_cache) = &state.gha_cache {
-        gha_cache
-            .enqueue_paths(state.store.clone(), store_paths.clone())
-            .await?;
+        gha_cache.enqueue_paths(store_paths.clone()).await?;
     }
 
     if let Some(flakehub_state) = &*state.flakehub_state.read().await {

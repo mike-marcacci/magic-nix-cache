@@ -35,7 +35,6 @@ impl GhaCache {
         cache_version: Option<String>,
         store: Arc<NixStore>,
         metrics: Arc<telemetry::TelemetryReport>,
-        narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
     ) -> Result<GhaCache> {
         let cb_metrics = metrics.clone();
         let mut api = Api::new(
@@ -58,14 +57,7 @@ impl GhaCache {
         let api2 = api.clone();
 
         let worker_result = tokio::task::spawn(async move {
-            worker(
-                &api2,
-                store,
-                channel_rx,
-                metrics,
-                narinfo_negative_cache.clone(),
-            )
-            .await
+            worker(&api2, store, channel_rx, metrics).await
         });
 
         Ok(GhaCache {
@@ -90,17 +82,14 @@ impl GhaCache {
 
     pub async fn enqueue_paths(
         &self,
-        store: Arc<NixStore>,
         store_paths: Vec<StorePath>,
     ) -> Result<()> {
-        // FIXME: compute_fs_closure_multi doesn't return a
-        // toposort, though it doesn't really matter for the GHA
-        // cache.
-        let closure = store
-            .compute_fs_closure_multi(store_paths, false, false, false)
-            .await?;
-
-        for p in closure {
+        // NOTE: We intentionally do NOT compute the full closure here.
+        // The post-build hook fires for each locally-built derivation,
+        // so we only need to upload the paths we're given - not their
+        // (potentially huge) dependency tree which likely came from
+        // upstream caches like cache.nixos.org.
+        for p in store_paths {
             self.channel_tx
                 .send(Request::Upload(p))
                 .map_err(|_| Error::Internal("Cannot send upload message".to_owned()))?;
@@ -115,7 +104,6 @@ async fn worker(
     store: Arc<NixStore>,
     mut channel_rx: UnboundedReceiver<Request>,
     metrics: Arc<telemetry::TelemetryReport>,
-    narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
     let mut done = HashSet::new();
 
@@ -134,15 +122,7 @@ async fn worker(
                     continue;
                 }
 
-                if let Err(err) = upload_path(
-                    api,
-                    store.clone(),
-                    &path,
-                    metrics.clone(),
-                    narinfo_negative_cache.clone(),
-                )
-                .await
-                {
+                if let Err(err) = upload_path(api, store.clone(), &path, metrics.clone()).await {
                     tracing::error!(
                         "Upload of path '{}' failed: {}",
                         store.get_full_path(&path).display(),
@@ -161,22 +141,7 @@ async fn upload_path(
     store: Arc<NixStore>,
     path: &StorePath,
     metrics: Arc<telemetry::TelemetryReport>,
-    narinfo_negative_cache: Arc<RwLock<HashSet<String>>>,
 ) -> Result<()> {
-    // Skip uploading paths that came from an upstream cache.
-    // The negative cache contains paths that were requested but not found in
-    // the GHA cache, meaning they were fetched from an upstream cache like
-    // cache.nixos.org. There's no need to re-upload these.
-    let path_hash = path.to_hash().to_string();
-    if narinfo_negative_cache.read().await.contains(&path_hash) {
-        tracing::debug!(
-            "Skipping upload of '{}' because it was fetched from an upstream cache",
-            store.get_full_path(path).display()
-        );
-        metrics.nars_skipped_upstream.incr();
-        return Ok(());
-    }
-
     let path_info = store.query_path_info(path.clone()).await?;
 
     // Upload the NAR.
@@ -215,11 +180,6 @@ async fn upload_path(
         .await?;
 
     metrics.narinfos_uploaded.incr();
-
-    narinfo_negative_cache
-        .write()
-        .await
-        .remove(&path.to_hash().to_string());
 
     tracing::info!(
         "Uploaded '{}' to the GitHub Action Cache",
